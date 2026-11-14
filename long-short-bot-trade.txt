@@ -1,6 +1,6 @@
 //@version=5
-// Version: 2.0.6
-indicator("Long/Short Bot-trade v2.0.6", overlay=true)
+// Version: 2.0.7
+indicator("Long/Short Bot-trade v2.0.7", overlay=true)
 
 // --- THIẾT LẬP MỨC GIÁ & NẾN VÀO LỆNH ---
 grp_setup      = "1. Mức giá & Vị trí nến vào lệnh"
@@ -37,11 +37,12 @@ showVol     = input.bool(false, "Nhãn khối lượng vào lệnh (Volume)", gr
 showBoxes   = input.bool(true,  "Vùng hộp lợi nhuận / rủi ro (Boxes)", group=grp_vis)
 showNotice  = input.bool(true,  "Bảng thông báo khi chỉ báo tạm ẩn trên cặp khác", group=grp_vis)
 
-// --- 7. KẾT NỐI BOT GIAO DỊCH BINANCE FUTURES (v2.0.6) ---
+// --- 7. KẾT NỐI BOT GIAO DỊCH BINANCE FUTURES (v2.0.7) ---
 grp_bot        = "7. Kết nối Bot Binance Futures (Bridge & Stop-Limit BE)"
 enableBridge   = input.bool(true, "Xuất dữ liệu cho Nút Đặt Lệnh trên TradingView", tooltip="Xuất các thông số (Chiều lệnh, Entry, SL, TP, Volume, Risk%, R:R) lên thanh trạng thái chỉ báo để Tiện ích Nút Bấm (Alt+B) đọc tự động theo thời gian thực.", group=grp_bot)
 useStopLimitBE = input.bool(true, "Chế độ Stop-Limit Chốt Hòa khi chạm SL", tooltip="Khi giá chạm Stop Loss: Hủy TP cũ và đặt lệnh Limit Chốt Hòa tại Entry + phí 2 chiều (0.04%).", group=grp_bot)
 beFeePct       = input.float(0.04, "Phí 2 chiều cộng vào giá Chốt Hòa (%)", minval=0.0, maxval=2.0, step=0.01, group=grp_bot)
+highRiskMode   = input.bool(false, "🔥 Mode Mạo Hiểm: Vol = (TK / 3) * 25 + SL cứng 4%", tooltip="Mặc định TẮT. Khi bật: Volume tính theo công thức (Số dư TK / 3 * 25) / Entry. Khi chạm SL 1 sẽ đặt lệnh Hòa (BE), nếu giá không quay về giá Hòa mà rơi tiếp chạm SL cứng 4% tính từ Entry sẽ đóng lệnh.", group=grp_bot)
 botLeverage    = input.int(20, "Đòn bẩy mặc định gửi sang Bot (x)", minval=1, maxval=125, group=grp_bot)
 enableWebhook  = input.bool(false, "Bắn tín hiệu JSON qua TradingView Alert", tooltip="Bật tùy chọn này nếu bạn muốn dùng thêm tính năng Webhook Alert gốc của TradingView.", group=grp_bot)
 
@@ -86,10 +87,12 @@ else if isShort
     finalTP := finalEntry - (riskDist * rrRatio)
 
 float bePrice = isLong ? (finalEntry * (1.0 + beFeePct / 100.0)) : (finalEntry * (1.0 - beFeePct / 100.0))
+float hardSL  = isLong ? (finalEntry * 0.96) : (finalEntry * 1.04)
 
 // --- TÍNH TOÁN KHỐI LƯỢNG (POSITION SIZE / VOLUME) ---
-float riskAmount = accountBal * (riskPercent / 100.0)
-float calcVolume = riskDist > 0.0 ? (riskAmount / riskDist) : 0.0
+float highRiskNotional = (accountBal / 3.0) * 25.0
+float riskAmount = highRiskMode ? (highRiskNotional * 0.04) : (accountBal * (riskPercent / 100.0))
+float calcVolume = highRiskMode ? (finalEntry > 0.0 ? (highRiskNotional / finalEntry) : 0.0) : (riskDist > 0.0 ? (riskAmount / riskDist) : 0.0)
 
 string volFormatStr = calcVolume >= 100 ? "#.##" : (calcVolume >= 1 ? "#.###" : "#.#####")
 string volText = "Vol: " + str.tostring(calcVolume, volFormatStr) + " (Risk: $" + str.tostring(riskAmount, "#.##") + ")"
@@ -198,18 +201,24 @@ f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, in
                 nMaxFav := math.max(nMaxFav, math.max(0.0, entry - segLow) / rDist)
                 nMaxAdv := math.max(nMaxAdv, math.max(0.0, segHigh - entry) / rDist)
 
-    // 3. Nếu đã chạm SL ở chế độ Stop-Limit Chốt Hòa (WAIT_BE): Hủy TP và chờ giá hồi về bePrice
+    // 3. Nếu đã chạm SL ở chế độ Stop-Limit Chốt Hòa (WAIT_BE): Hủy TP và chờ giá hồi về bePrice (hoặc chạm SL cứng 4% nếu bật Mode Mạo Hiểm)
     if nSt == "WAIT_BE" and rDist > 0.0
         if dirLong
             float segLow = math.min(activeStart, pEnd)
             nMaxAdv := math.max(nMaxAdv, math.max(1.0, (entry - segLow) / rDist))
-            if activeStart >= bePrice or pEnd >= bePrice
+            if highRiskMode and (activeStart <= hardSL or pEnd <= hardSL)
+                nSt   := "HIT_HARD_SL"
+                nEndB := bIdx
+            else if activeStart >= bePrice or pEnd >= bePrice
                 nSt   := "HIT_BE"
                 nEndB := bIdx
         else
             float segHigh = math.max(activeStart, pEnd)
             nMaxAdv := math.max(nMaxAdv, math.max(1.0, (segHigh - entry) / rDist))
-            if activeStart <= bePrice or pEnd <= bePrice
+            if highRiskMode and (activeStart >= hardSL or pEnd >= hardSL)
+                nSt   := "HIT_HARD_SL"
+                nEndB := bIdx
+            else if activeStart <= bePrice or pEnd <= bePrice
                 nSt   := "HIT_BE"
                 nEndB := bIdx
 
@@ -319,7 +328,7 @@ if barstate.islast
     if not isChartActive and (entryPx != 0.0 or slPx != 0.0)
         if showNotice
             string reason = not symbolMatches ? ("Khóa cặp: [" + targetSymbol + "] | Hiện tại: [" + syminfo.ticker + "]") : ("Lệch giá: Entry " + str.tostring(finalEntry, "#.##") + " vs " + str.tostring(close, "#.##") + " (" + str.tostring(priceDiffPct, "#.#") + "%)")
-            table.cell(noticeTable, 0, 0, "⚠️ Tracker v2.0.6: Tạm ẩn", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 15))
+            table.cell(noticeTable, 0, 0, "⚠️ Tracker v2.0.7: Tạm ẩn", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 15))
             table.cell(noticeTable, 0, 1, reason + "\nChuyển về đúng cặp tiền để hiển thị.", text_color=color.white, text_size=size.tiny, bgcolor=color.new(color.black, 15))
     else if not na(startBar) and finalSL != 0.0 and finalSL != finalEntry
         // Xây dựng nội dung trạng thái và thông số MFE / MAE
@@ -353,6 +362,11 @@ if barstate.islast
             statusColor := color.maroon
             statusText  := "HIT SL (-1.00R | -$" + str.tostring(riskAmount, "#.##") + ")" +
                            "\nMFE: +" + str.tostring(maxFavorableR, "#.##") + "R (+$" + str.tostring(maxFavorableR * riskAmount, "#.##") + ")"
+
+        else if tradeStatus == "HIT_HARD_SL"
+            statusColor := color.red
+            statusText  := "HIT HARD SL 4% @ " + str.tostring(hardSL, format.mintick) + " (-$" + str.tostring(riskAmount, "#.##") + ")" +
+                           "\nMax DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
 
         color tpBg = color.new(color.teal, tradeStatus == "HIT_SL" ? 90 : 75)
         color slBg = color.new(color.maroon, tradeStatus == "HIT_TP" ? 90 : 75)
@@ -407,6 +421,6 @@ plot(enableBridge ? botLeverage  : na, "BOT_LEV",      color=color.gray,   displ
 
 if enableWebhook and barstate.islast and isValidSetup
     string sideStr = isLong ? "LONG" : "SHORT"
-    string payload = '{"symbol":"' + syminfo.ticker + '","side":"' + sideStr + '","entry":' + str.tostring(finalEntry) + ',"sl":' + str.tostring(finalSL) + ',"tp":' + str.tostring(finalTP) + ',"be_price":' + str.tostring(bePrice) + ',"sl_mode":"' + (useStopLimitBE ? "STOP_LIMIT_BE" : "STOP_MARKET") + '","volume":' + str.tostring(calcVolume) + ',"risk_pct":' + str.tostring(riskPercent) + ',"risk_usd":' + str.tostring(riskAmount) + ',"rr":' + str.tostring(rrRatio) + ',"leverage":' + str.tostring(botLeverage) + ',"version":"2.0.6"}'
+    string payload = '{"symbol":"' + syminfo.ticker + '","side":"' + sideStr + '","entry":' + str.tostring(finalEntry) + ',"sl":' + str.tostring(finalSL) + ',"tp":' + str.tostring(finalTP) + ',"be_price":' + str.tostring(bePrice) + ',"hard_sl":' + str.tostring(hardSL) + ',"high_risk_mode":' + str.tostring(highRiskMode) + ',"sl_mode":"' + ((useStopLimitBE or highRiskMode) ? "STOP_LIMIT_BE" : "STOP_MARKET") + '","volume":' + str.tostring(calcVolume) + ',"risk_pct":' + str.tostring(riskPercent) + ',"risk_usd":' + str.tostring(riskAmount) + ',"rr":' + str.tostring(rrRatio) + ',"leverage":' + str.tostring(botLeverage) + ',"version":"2.0.7"}'
     alert(payload, alert.freq_once_per_bar)
 

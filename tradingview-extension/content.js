@@ -1,4 +1,4 @@
-// Long/Short Tracker Bridge v2.0.6 - Nút Đặt Lệnh & Stop-Limit Chốt Hòa (Alt+B) ngay trên TradingView
+// Long/Short Tracker Bridge v2.0.7 - Nút Đặt Lệnh, Stop-Limit Chốt Hòa & Mode Mạo Hiểm (Alt+B) trên TradingView
 (function () {
   const oldPanel = document.getElementById("ls-tracker-floating-panel");
   if (oldPanel) oldPanel.remove();
@@ -7,6 +7,7 @@
   const BOT_URL = "http://localhost:8000";
   let autoSyncEnabled = true;
   let isMinimized = false;
+  let detectedAccountBalance = 10000.0;
 
   function parseTvNumber(str) {
     if (str === null || str === undefined) return NaN;
@@ -117,7 +118,7 @@
     position: fixed;
     bottom: 24px;
     right: 24px;
-    width: 320px;
+    width: 325px;
     background: #131722;
     border: 1px solid #2a2e39;
     border-top: 3px solid #fcd535;
@@ -134,7 +135,7 @@
     <div id="lst-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e222d;border-radius:8px 8px 0 0;cursor:move;">
       <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:12px;color:#fcd535;">
         <span id="lst-dot" style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;"></span>
-        <span>⚡ LONG/SHORT TRACKER v2.0.6</span>
+        <span>⚡ LONG/SHORT TRACKER v2.0.7</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
         <button id="lst-sync-now" title="Đọc lại giá từ biểu đồ ngay lập tức" style="background:#334155;border:none;color:#e2e8f0;border-radius:4px;cursor:pointer;font-size:10px;padding:2px 6px;font-weight:600;">🔄 Sync</button>
@@ -172,7 +173,7 @@
           <input id="lst-tp" type="number" step="any" placeholder="Take Profit" style="width:100%;box-sizing:border-box;background:#0b0e14;border:1px solid #14b8a666;border-radius:4px;color:#5eead4;font-weight:700;font-size:12px;padding:4px 6px;" />
         </div>
         <div>
-          <label style="display:block;font-size:10px;color:#c084fc;margin-bottom:2px;font-weight:600;">Volume (Hoặc theo %Risk)</label>
+          <label style="display:block;font-size:10px;color:#c084fc;margin-bottom:2px;font-weight:600;">Volume (Coin)</label>
           <input id="lst-vol" type="number" step="any" placeholder="Auto" style="width:100%;box-sizing:border-box;background:#0b0e14;border:1px solid #a855f766;border-radius:4px;color:#d8b4fe;font-weight:700;font-size:12px;padding:4px 6px;" />
         </div>
       </div>
@@ -189,7 +190,7 @@
       </div>
 
       <!-- Chế độ Stop-Limit Chốt Hòa (0.04% phí) -->
-      <div style="background:#0b0e14;border:1px solid #fcd53555;border-radius:6px;padding:6px 8px;margin-bottom:9px;">
+      <div style="background:#0b0e14;border:1px solid #fcd53555;border-radius:6px;padding:6px 8px;margin-bottom:6px;">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#fcd535;cursor:pointer;" title="Khi giá chạm SL -> Tự động hủy TP và đặt lệnh Limit Chốt Hòa (cộng 0.04% phí 2 chiều)">
             <input id="lst-stoplimit-be" type="checkbox" checked style="accent-color:#fcd535;" />
@@ -197,8 +198,22 @@
           </label>
           <span style="font-size:10px;color:#94a3b8;">Phí 0.04%</span>
         </div>
-        <div id="lst-be-preview" style="font-size:10.5px;color:#cbd5e1;margin-top:3px;padding-left:18px;">
+        <div id="lst-be-preview" style="font-size:10.5px;color:#cbd5e1;margin-top:2px;padding-left:18px;">
           Giá Chốt Hòa (BE): <b style="color:#fcd535;">--</b>
+        </div>
+      </div>
+
+      <!-- Mode Mạo Hiểm: Vol = (TK / 3) * 25 + SL cứng 4% (Mặc định KHÔNG chọn) -->
+      <div id="lst-highrisk-box" style="background:#0b0e14;border:1px solid #334155;border-radius:6px;padding:6px 8px;margin-bottom:9px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#f87171;cursor:pointer;" title="Mode Mạo Hiểm: Volume = (Tài khoản / 3) × 25. Chạm SL thường vẫn đặt lệnh hòa, rơi tiếp chạm SL cứng 4% sẽ đóng lệnh!">
+            <input id="lst-high-risk" type="checkbox" style="accent-color:#f43f5e;" />
+            <span>🔥 Mode Mạo Hiểm (TK/3 × 25)</span>
+          </label>
+          <span style="font-size:10px;color:#fda4af;">SL Cứng 4%</span>
+        </div>
+        <div id="lst-highrisk-preview" style="display:none;font-size:10.5px;color:#cbd5e1;margin-top:3px;padding-left:18px;line-height:1.4;">
+          Vol USD: <b style="color:#c084fc;">--</b> | SL Cứng 4%: <b style="color:#f43f5e;">--</b>
         </div>
       </div>
 
@@ -256,12 +271,26 @@
     syncNow(true);
   });
 
+  document.getElementById("lst-high-risk").addEventListener("change", () => {
+    const isHR = document.getElementById("lst-high-risk").checked;
+    const hrBox = document.getElementById("lst-highrisk-box");
+    const hrPrev = document.getElementById("lst-highrisk-preview");
+    hrBox.style.borderColor = isHR ? "#f43f5e" : "#334155";
+    hrPrev.style.display = isHR ? "block" : "none";
+    if (isHR) {
+      document.getElementById("lst-stoplimit-be").checked = true;
+    }
+    updateSideBadge();
+  });
+
   function updateSideBadge() {
     const entry = parseFloat(document.getElementById("lst-entry").value) || 0;
     const sl = parseFloat(document.getElementById("lst-sl").value) || 0;
     const rr = parseFloat(document.getElementById("lst-rr").value) || 2.0;
+    const isHR = document.getElementById("lst-high-risk").checked;
     const badge = document.getElementById("lst-side-badge");
     const bePreview = document.getElementById("lst-be-preview");
+    const hrPreview = document.getElementById("lst-highrisk-preview");
 
     if (entry > 0 && sl > 0 && entry !== sl) {
       const isLong = sl < entry;
@@ -271,6 +300,14 @@
 
       const bePrice = isLong ? entry * 1.0004 : entry * 0.9996;
       bePreview.innerHTML = `Giá Chốt Hòa (BE): <b style="color:#fcd535;">${Number(bePrice.toPrecision(7))}</b> <span style="color:#64748b;">(Hủy TP khi chạm ${sl})</span>`;
+
+      if (isHR) {
+        const notionalUsd = (detectedAccountBalance / 3.0) * 25.0;
+        const hrCoinVol = notionalUsd / entry;
+        const hardSl = isLong ? entry * 0.96 : entry * 1.04;
+        document.getElementById("lst-vol").value = Number(hrCoinVol.toPrecision(5));
+        hrPreview.innerHTML = `Vol: <b style="color:#c084fc;">$${notionalUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}</b> (TK $${detectedAccountBalance.toLocaleString("en-US", { maximumFractionDigits: 0 })})<br/>🛑 SL Cứng 4%: <b style="color:#f43f5e;">${Number(hardSl.toPrecision(7))}</b>`;
+      }
 
       if (!autoSyncEnabled) {
         const dist = Math.abs(entry - sl);
@@ -299,11 +336,16 @@
 
     const data = readIndicatorValuesFromLegend();
     const statusEl = document.getElementById("lst-status-msg");
+    const isHR = document.getElementById("lst-high-risk").checked;
+
     if (data && data.entry > 0 && data.sl > 0) {
+      if (data.risk_usd > 0 && data.risk_pct > 0) {
+        detectedAccountBalance = data.risk_usd / (data.risk_pct / 100.0);
+      }
       document.getElementById("lst-entry").value = data.entry;
       document.getElementById("lst-sl").value = data.sl;
       if (data.tp > 0) document.getElementById("lst-tp").value = data.tp;
-      if (data.volume > 0) document.getElementById("lst-vol").value = data.volume;
+      if (!isHR && data.volume > 0) document.getElementById("lst-vol").value = data.volume;
       if (data.risk_pct > 0) document.getElementById("lst-risk-pct").value = data.risk_pct;
       if (data.rr > 0) document.getElementById("lst-rr").value = data.rr;
       updateSideBadge();
@@ -331,6 +373,7 @@
     const risk_pct = parseFloat(document.getElementById("lst-risk-pct").value) || 1.0;
     const rr = parseFloat(document.getElementById("lst-rr").value) || 2.0;
     const useStopLimitBE = document.getElementById("lst-stoplimit-be").checked;
+    const highRiskMode = document.getElementById("lst-high-risk").checked;
     const statusEl = document.getElementById("lst-status-msg");
 
     if (sl <= 0 || sl === entry) {
@@ -348,16 +391,20 @@
       volume,
       risk_pct,
       rr,
-      sl_mode: useStopLimitBE ? "STOP_LIMIT_BE" : "STOP_MARKET",
+      sl_mode: (useStopLimitBE || highRiskMode) ? "STOP_LIMIT_BE" : "STOP_MARKET",
       be_fee_pct: 0.04,
-      source: "TradingView (Alt+B)"
+      high_risk_mode: highRiskMode,
+      hard_sl_pct: 4.0,
+      account_balance: detectedAccountBalance,
+      source: highRiskMode ? "TradingView (🔥 Mạo Hiểm)" : "TradingView (Alt+B)"
     };
 
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({ type: "PLACE_ORDER", botUrl: BOT_URL, payload }, (res) => {
         if (res && res.ok && res.data && res.data.trade) {
           const t = res.data.trade;
-          statusEl.innerHTML = `<span style="color:#10b981;font-weight:700;">✅ Đã đặt ${t.side} @ ${t.entry} (BE: ${t.be_price})</span>`;
+          const extra = t.high_risk_mode ? ` | SL Cứng: ${t.hard_sl}` : ` | BE: ${t.be_price}`;
+          statusEl.innerHTML = `<span style="color:#10b981;font-weight:700;">✅ Đã đặt ${t.side} @ ${t.entry}${extra}</span>`;
         } else {
           statusEl.innerHTML = `<span style="color:#f43f5e;">❌ ${res ? res.error : "Lỗi kết nối Bot"}</span>`;
         }
@@ -372,7 +419,8 @@
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "Lỗi đặt lệnh");
           const t = d.trade;
-          statusEl.innerHTML = `<span style="color:#10b981;font-weight:700;">✅ Đã đặt ${t.side} @ ${t.entry} (BE: ${t.be_price})</span>`;
+          const extra = t.high_risk_mode ? ` | SL Cứng: ${t.hard_sl}` : ` | BE: ${t.be_price}`;
+          statusEl.innerHTML = `<span style="color:#10b981;font-weight:700;">✅ Đã đặt ${t.side} @ ${t.entry}${extra}</span>`;
         })
         .catch((err) => {
           statusEl.innerHTML = `<span style="color:#f43f5e;">❌ ${err.message}</span>`;

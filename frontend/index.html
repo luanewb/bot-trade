@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MT5 Terminal - Binance Futures Long/Short Tracker Bot v2.0.6</title>
+  <title>MT5 Terminal - Binance Futures Long/Short Tracker Bot v2.0.7</title>
   <link rel="icon" type="image/png" href="/static/favicon.png" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -54,7 +54,7 @@
         <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" id="ws-dot"></span>
         <h1 class="font-bold text-sm md:text-base tracking-wide text-white flex items-center gap-2">
           <span>⚡ LONG/SHORT TRACKER BOT</span>
-          <span class="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 mono">v2.0.6</span>
+          <span class="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 mono">v2.0.7</span>
         </h1>
       </div>
       <span id="mode-badge" class="text-xs font-bold px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 mono">
@@ -213,7 +213,7 @@
         </div>
 
         <!-- Stop-Limit Chốt Hòa (Breakeven Recovery) -->
-        <div class="bg-slate-900/95 border border-amber-500/30 rounded p-2 mb-2.5 text-xs">
+        <div class="bg-slate-900/95 border border-amber-500/30 rounded p-2 mb-2 text-xs">
           <div class="flex items-center justify-between">
             <label class="flex items-center gap-1.5 font-bold text-amber-300 cursor-pointer">
               <input id="form-stoplimit-be" type="checkbox" checked onchange="recalcTrackerForm(false)" class="accent-amber-400 w-3.5 h-3.5" />
@@ -229,6 +229,21 @@
           <div class="mt-1 flex items-center justify-between text-[11px] text-slate-400 pl-5">
             <span>Khi chạm SL sẽ tự hủy TP & đặt Limit tại:</span>
             <span id="preview-be-price" class="font-bold text-amber-300 mono">--</span>
+          </div>
+        </div>
+
+        <!-- High-Risk Mode: Vol = (TK / 3) * 25 + Hard SL 4% (Unchecked by default) -->
+        <div class="bg-rose-950/20 border border-rose-500/30 rounded p-2 mb-2.5 text-xs">
+          <div class="flex items-center justify-between">
+            <label class="flex items-center gap-1.5 font-bold text-rose-400 cursor-pointer">
+              <input id="form-high-risk" type="checkbox" onchange="recalcTrackerForm(false)" class="accent-rose-500 w-3.5 h-3.5" />
+              <span>🔥 Mode Mạo Hiểm (Vol = TK/3 × 25 | SL cứng 4%)</span>
+            </label>
+            <span id="preview-high-risk-notional" class="text-[11px] font-bold text-amber-300 mono hidden">$0</span>
+          </div>
+          <div id="high-risk-detail" class="mt-1 flex items-center justify-between text-[11px] text-slate-400 pl-5 hidden">
+            <span>Chạm SL 1 đặt lệnh Hòa · Rơi tiếp chạm SL cứng 4% đóng lệnh:</span>
+            <span id="preview-hard-sl" class="font-bold text-rose-400 mono">--</span>
           </div>
         </div>
 
@@ -715,12 +730,39 @@
         document.getElementById('form-rr').value = rr.toFixed(2);
       }
 
-      const riskUsd = balance * (riskPct / 100.0);
-      const calcVol = riskDist > 0 ? (riskUsd / riskDist) : 0;
+      const highRiskEl = document.getElementById('form-high-risk');
+      const isHighRisk = highRiskEl && highRiskEl.checked;
+      const highRiskDetail = document.getElementById('high-risk-detail');
+      const highRiskNotionalEl = document.getElementById('preview-high-risk-notional');
+      const hardSlEl = document.getElementById('preview-hard-sl');
+
+      let riskUsd = balance * (riskPct / 100.0);
+      let calcVol = riskDist > 0 ? (riskUsd / riskDist) : 0;
+
+      if (isHighRisk) {
+        // High-Risk Mode: Notional = (Balance / 3) * 25, Hard SL = 4% from Entry
+        document.getElementById('form-stoplimit-be').checked = true;
+        const notionalUsd = (balance / 3.0) * 25.0;
+        calcVol = entry > 0 ? (notionalUsd / entry) : 0;
+        const hardSlPrice = isLong ? (entry * 0.96) : (entry * 1.04);
+        riskUsd = notionalUsd * 0.04; // Hard SL 4% max loss
+        if (highRiskDetail) highRiskDetail.classList.remove('hidden');
+        if (highRiskNotionalEl) {
+          highRiskNotionalEl.classList.remove('hidden');
+          highRiskNotionalEl.innerText = `Vol: $${notionalUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+        }
+        if (hardSlEl) hardSlEl.innerText = Number(hardSlPrice.toPrecision(7));
+      } else {
+        if (highRiskDetail) highRiskDetail.classList.add('hidden');
+        if (highRiskNotionalEl) highRiskNotionalEl.classList.add('hidden');
+      }
+
       document.getElementById('form-volume').value = Number(calcVol.toPrecision(5));
 
-      const rewardUsd = riskUsd * rr;
-      document.getElementById('preview-risk-usd').innerText = `-$${riskUsd.toFixed(2)}`;
+      const rewardUsd = calcVol * Math.abs(tp - entry);
+      document.getElementById('preview-risk-usd').innerText = isHighRisk
+        ? `-$${riskUsd.toFixed(2)} (SL 4%)`
+        : `-$${riskUsd.toFixed(2)}`;
       document.getElementById('preview-risk-dist').innerText = Number(riskDist.toPrecision(5));
       document.getElementById('preview-reward-usd').innerText = `+$${rewardUsd.toFixed(2)} (+${rr.toFixed(2)}R)`;
 
@@ -740,6 +782,7 @@
       const sl = parseFloat(document.getElementById('form-sl').value) || 0;
       const tp = parseFloat(document.getElementById('form-tp').value) || 0;
       const useBe = document.getElementById('form-stoplimit-be') && document.getElementById('form-stoplimit-be').checked;
+      const isHighRisk = document.getElementById('form-high-risk') && document.getElementById('form-high-risk').checked;
       const beFeePct = parseFloat(document.getElementById('form-be-fee')?.value) || 0.04;
 
       if (entry > 0) {
@@ -759,7 +802,15 @@
       if (sl > 0) {
         priceLines.push(candleSeries.createPriceLine({
           price: sl, color: '#f43f5e', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
-          axisLabelVisible: true, title: useBe ? 'SL TRIGGER (Hủy TP -> BE)' : 'SL (-1R)'
+          axisLabelVisible: true, title: useBe ? 'SL 1 (Hủy TP -> Đặt Hòa)' : 'SL (-1R)'
+        }));
+      }
+      if (entry > 0 && sl > 0 && isHighRisk) {
+        const isLong = sl < entry;
+        const hardSlPx = isLong ? entry * 0.96 : entry * 1.04;
+        priceLines.push(candleSeries.createPriceLine({
+          price: Number(hardSlPx.toPrecision(7)), color: '#dc2626', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true, title: '🛑 SL CỨNG 4% (Đóng Lệnh)'
         }));
       }
       if (tp > 0) {
@@ -780,7 +831,8 @@
       const risk_pct = parseFloat(document.getElementById('form-risk-pct').value) || 1.0;
       const volume = parseFloat(document.getElementById('form-volume').value) || 0;
       const leverage = parseInt(document.getElementById('form-leverage').value) || 20;
-      const useStopLimitBE = document.getElementById('form-stoplimit-be').checked;
+      const high_risk_mode = !!(document.getElementById('form-high-risk') && document.getElementById('form-high-risk').checked);
+      const useStopLimitBE = high_risk_mode || document.getElementById('form-stoplimit-be').checked;
       const be_fee_pct = parseFloat(document.getElementById('form-be-fee').value) || 0.04;
 
       if (sl <= 0 || sl === entry) {
@@ -796,6 +848,8 @@
             symbol, order_type, entry, sl, tp, rr, risk_pct, volume, leverage,
             sl_mode: useStopLimitBE ? 'STOP_LIMIT_BE' : 'STOP_MARKET',
             be_fee_pct,
+            high_risk_mode,
+            hard_sl_pct: 4.0,
             source: 'MT5 Dashboard'
           })
         });
@@ -1035,12 +1089,16 @@
                   ${t.side}
                 </span>
               </td>
-              <td class="mono font-semibold text-purple-300">${t.quantity} <span class="text-[10px] text-slate-400">($${t.risk_usd})</span></td>
+              <td class="mono font-semibold text-purple-300">
+                <div>${t.quantity} <span class="text-[10px] text-slate-400">($${t.risk_usd})</span></div>
+                ${t.high_risk_mode ? `<div class="text-[10px] text-rose-400 font-bold">🔥 Vol: $${(t.notional_usd || 0).toLocaleString()}</div>` : ''}
+              </td>
               <td class="mono font-semibold text-orange-300">${t.entry}</td>
               <td class="mono font-bold text-white">${t.mark_price}</td>
               <td class="mono text-rose-400 font-semibold">
                 <div>${t.sl}</div>
                 ${t.sl_mode === 'STOP_LIMIT_BE' ? `<div class="text-[10px] text-amber-300">🛡️ BE: ${t.be_price || '--'}</div>` : ''}
+                ${t.high_risk_mode && t.hard_sl ? `<div class="text-[10px] text-rose-400 font-bold">🛑 SL 4%: ${t.hard_sl}</div>` : ''}
               </td>
               <td class="mono text-teal-400 font-semibold">
                 ${t.sl_triggered
@@ -1093,7 +1151,10 @@
               <td class="mono font-semibold text-purple-300">${t.quantity} <span class="text-[10px] text-slate-400">(Risk: $${t.risk_usd})</span></td>
               <td class="mono font-bold text-orange-300">${t.entry}</td>
               <td class="mono text-slate-300">${t.mark_price}</td>
-              <td class="mono text-rose-400 font-semibold">${t.sl}</td>
+              <td class="mono text-rose-400 font-semibold">
+                <div>${t.sl}</div>
+                ${t.high_risk_mode && t.hard_sl ? `<div class="text-[10px] text-rose-400 font-bold">🛑 SL 4%: ${t.hard_sl}</div>` : ''}
+              </td>
               <td class="mono text-teal-400 font-semibold">${t.tp} <span class="text-[10px] text-slate-400">(1:${t.rr})</span></td>
               <td><span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[11px] font-bold mono">WAITING</span></td>
               <td class="text-right space-x-1" onclick="event.stopPropagation()">
@@ -1122,7 +1183,7 @@
           const sign = rUsd >= 0 ? '+' : '';
           let badgeCls = 'bg-slate-800 text-slate-400';
           if (t.status === 'HIT_TP') badgeCls = 'bg-teal-500/20 text-teal-300 border border-teal-500/40';
-          if (t.status === 'HIT_SL') badgeCls = 'bg-rose-500/20 text-rose-300 border border-rose-500/40';
+          if (t.status === 'HIT_SL' || t.status === 'HIT_HARD_SL') badgeCls = 'bg-rose-500/20 text-rose-300 border border-rose-500/40';
           if (t.status === 'HIT_BE') badgeCls = 'bg-amber-500/20 text-amber-300 border border-amber-500/40';
           if (t.status === 'MANUAL_CLOSE') badgeCls = 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40';
 

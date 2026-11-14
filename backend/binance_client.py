@@ -373,13 +373,14 @@ class BinanceFuturesClient:
         tp_price: float,
         sl_mode: str = "STOP_LIMIT_BE",
         be_price: float = 0.0,
+        hard_sl_price: float = 0.0,
     ) -> Dict[str, Any]:
         sym = normalize_binance_symbol(symbol)
         hedge = await self.is_hedge_mode()
         close_side = "SELL" if side.upper() == "LONG" else "BUY"
         pos_side = ("LONG" if side.upper() == "LONG" else "SHORT") if hedge else "BOTH"
 
-        results: Dict[str, Any] = {"sl_order": None, "tp_order": None}
+        results: Dict[str, Any] = {"sl_order": None, "tp_order": None, "hard_sl_order": None}
 
         if sl_price > 0:
             if sl_mode.upper() == "STOP_LIMIT_BE" and be_price > 0:
@@ -412,6 +413,23 @@ class BinanceFuturesClient:
                 results["sl_order"] = await self._signed_request("POST", "/fapi/v1/order", sl_params)
             except Exception as e:
                 results["sl_error"] = str(e)
+
+        if hard_sl_price > 0:
+            hard_params: Dict[str, Any] = {
+                "symbol": sym,
+                "side": close_side,
+                "positionSide": pos_side,
+                "type": "STOP_MARKET",
+                "stopPrice": hard_sl_price,
+                "quantity": quantity,
+                "workingType": "MARK_PRICE",
+            }
+            if not hedge:
+                hard_params["reduceOnly"] = "true"
+            try:
+                results["hard_sl_order"] = await self._signed_request("POST", "/fapi/v1/order", hard_params)
+            except Exception as e:
+                results["hard_sl_error"] = str(e)
 
         if tp_price > 0:
             tp_params: Dict[str, Any] = {

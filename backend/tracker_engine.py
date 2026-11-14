@@ -61,7 +61,7 @@ class TrackerEngine:
         self.event_logs: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._load_trades()
-        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.6 (Chế độ: {self.settings['trading_mode']})")
+        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.7 (Chế độ: {self.settings['trading_mode']})")
 
     def calc_be_price(self, symbol: str, side: str, entry_px: float, fee_pct: Optional[float] = None) -> float:
         """Tính mức giá Chốt Hòa (Breakeven) cộng phí 2 chiều (mặc định 0.04%)."""
@@ -71,6 +71,15 @@ class TrackerEngine:
         else:
             raw_be = entry_px * (1.0 - pct)
         return self.client.round_price(symbol, raw_be)
+
+    def calc_hard_sl_price(self, symbol: str, side: str, entry_px: float, hard_sl_pct: float = 4.0) -> float:
+        """Tính mức SL Cắt Cứng (mặc định 4% tính từ Entry cho Mode Mạo Hiểm)."""
+        pct = float(hard_sl_pct) / 100.0
+        if side.upper() == "LONG":
+            raw_hard = entry_px * (1.0 - pct)
+        else:
+            raw_hard = entry_px * (1.0 + pct)
+        return self.client.round_price(symbol, raw_hard)
 
     def _log(self, level: str, message: str) -> None:
         entry = {
@@ -189,26 +198,50 @@ class TrackerEngine:
                 raise ValueError("Khoảng cách giữa Entry và SL quá nhỏ sau khi làm tròn tickSize!")
 
             # Tính toán Risk USD & Khối lượng (Volume)
+            high_risk_mode = bool(payload.get("high_risk_mode", False))  # Mặc định False (không chọn)
             risk_pct = float(payload.get("risk_pct") or self.settings.get("default_risk_pct", 1.0))
             input_volume = float(payload.get("volume") or 0.0)
             input_risk_usd = float(payload.get("risk_usd") or 0.0)
 
             use_acct_bal = bool(payload.get("use_account_balance", self.settings.get("use_account_balance_for_risk", False)))
-            base_balance = float(self.account_cache.get("balance") or self.settings.get("paper_balance", 10000.0))
+            base_balance = float(
+                payload.get("account_balance")
+                or self.account_cache.get("balance")
+                or self.settings.get("paper_balance", 10000.0)
+            )
 
-            if use_acct_bal or input_volume <= 0.0:
-                risk_usd = base_balance * (risk_pct / 100.0)
-                raw_qty = risk_usd / risk_dist
+            hard_sl_pct = float(payload.get("hard_sl_pct") or 4.0)
+            hard_sl_px = 0.0
+
+            if high_risk_mode:
+                # Công thức Mode Mạo Hiểm: Vol USD = (Tài khoản / 3) * 25, kèm SL cứng 4% từ Entry
+                notional_usd = (base_balance / 3.0) * 25.0
+                raw_qty = notional_usd / entry_px
+                hard_sl_px = float(payload.get("hard_sl") or 0.0)
+                if hard_sl_px <= 0.0:
+                    hard_sl_px = self.calc_hard_sl_price(symbol, side, entry_px, hard_sl_pct)
+                else:
+                    hard_sl_px = self.client.round_price(symbol, hard_sl_px)
+                quantity = self.client.round_quantity(symbol, raw_qty, mark_price=entry_px)
+                actual_risk_usd = round(quantity * abs(entry_px - hard_sl_px), 2)
+                leverage = max(int(payload.get("leverage") or 25), 25)
             else:
-                raw_qty = input_volume
-                risk_usd = input_risk_usd if input_risk_usd > 0 else (raw_qty * risk_dist)
+                if use_acct_bal or input_volume <= 0.0:
+                    risk_usd = base_balance * (risk_pct / 100.0)
+                    raw_qty = risk_usd / risk_dist
+                else:
+                    raw_qty = input_volume
+                    risk_usd = input_risk_usd if input_risk_usd > 0 else (raw_qty * risk_dist)
+                quantity = self.client.round_quantity(symbol, raw_qty, mark_price=entry_px)
+                actual_risk_usd = round(quantity * risk_dist, 2)
+                leverage = int(payload.get("leverage") or self.settings.get("default_leverage", 20))
 
-            quantity = self.client.round_quantity(symbol, raw_qty, mark_price=entry_px)
-            actual_risk_usd = round(quantity * risk_dist, 2)
-            leverage = int(payload.get("leverage") or self.settings.get("default_leverage", 20))
             source = str(payload.get("source", "TradingView"))
 
             sl_mode = str(payload.get("sl_mode") or self.settings.get("default_sl_mode", "STOP_LIMIT_BE")).upper()
+            if high_risk_mode:
+                sl_mode = "STOP_LIMIT_BE"
+
             be_fee_pct = float(
                 payload.get("be_fee_pct")
                 if payload.get("be_fee_pct") is not None
@@ -236,6 +269,10 @@ class TrackerEngine:
                 "tp": tp_px,
                 "initial_tp": tp_px,
                 "sl_mode": sl_mode,
+                "high_risk_mode": high_risk_mode,
+                "notional_usd": round(quantity * entry_px, 2),
+                "hard_sl": hard_sl_px,
+                "hard_sl_pct": hard_sl_pct if high_risk_mode else 0.0,
                 "be_fee_pct": be_fee_pct,
                 "be_price": be_price,
                 "sl_triggered": False,
@@ -264,6 +301,7 @@ class TrackerEngine:
                 "exchange_entry_order_id": None,
                 "exchange_sl_order_id": None,
                 "exchange_tp_order_id": None,
+                "exchange_hard_sl_order_id": None,
             }
 
             # Nếu ở chế độ TESTNET hoặc MAINNET -> Đặt lệnh thật lên Binance Futures
@@ -312,14 +350,15 @@ class TrackerEngine:
             self.trades[trade_id] = trade_record
             self._save_trades()
 
+            mode_tag = "🔥 MODE MẠO HIỂM (TK/3x25 | SL cứng 4%: " + str(hard_sl_px) + ")" if high_risk_mode else f"SL: {sl_px} ({sl_mode} -> BE: {be_price})"
             self._log(
                 "SUCCESS",
-                f"[{source}] Đặt lệnh {order_type} {side} {symbol} | Entry: {entry_px} | SL: {sl_px} ({sl_mode} -> BE: {be_price}) | TP: {tp_px} | Vol: {quantity}",
+                f"[{source}] Đặt lệnh {order_type} {side} {symbol} | Entry: {entry_px} | {mode_tag} | TP: {tp_px} | Vol: {quantity} (${trade_record['notional_usd']})",
             )
             return trade_record
 
     async def _attach_exchange_sl_tp(self, trade: Dict[str, Any]) -> None:
-        """Đặt lệnh SL (STOP_LIMIT_BE hoặc STOP_MARKET) và TAKE_PROFIT_MARKET (TP) lên sàn Binance Futures."""
+        """Đặt lệnh SL (STOP_LIMIT_BE + Hard SL 4% hoặc STOP_MARKET) và TAKE_PROFIT_MARKET (TP) lên sàn Binance Futures."""
         if self.settings["trading_mode"] not in ("TESTNET", "MAINNET"):
             return
         if not self.settings.get("auto_sl_tp_on_exchange", True):
@@ -327,7 +366,7 @@ class TrackerEngine:
 
         symbol = trade["symbol"]
         # Hủy SL/TP cũ nếu có
-        for oid_key in ("exchange_sl_order_id", "exchange_tp_order_id"):
+        for oid_key in ("exchange_sl_order_id", "exchange_tp_order_id", "exchange_hard_sl_order_id"):
             old_oid = trade.get(oid_key)
             if old_oid:
                 try:
@@ -336,7 +375,9 @@ class TrackerEngine:
                     pass
                 trade[oid_key] = None
 
-        # Nếu đã kích hoạt trạng thái chờ hồi về Chốt Hòa (sl_triggered == True) -> Chỉ đặt lệnh Limit đóng tại be_price
+        hard_sl_px = float(trade.get("hard_sl") or 0.0)
+
+        # Nếu đã kích hoạt trạng thái chờ hồi về Chốt Hòa (sl_triggered == True) -> Đặt lệnh Limit tại be_price + Giữ Hard SL 4% (nếu có)
         if trade.get("sl_triggered"):
             be_px = trade.get("be_price") or self.calc_be_price(symbol, trade["side"], trade["entry"], trade.get("be_fee_pct"))
             try:
@@ -349,6 +390,18 @@ class TrackerEngine:
                 trade["exchange_sl_order_id"] = be_order.get("orderId")
             except Exception as e:
                 self._log("ERROR", f"Lỗi đặt lệnh Limit Chốt Hòa trên sàn cho {symbol}: {e}")
+
+            if hard_sl_px > 0:
+                res_hard = await self.client.place_sl_tp_orders(
+                    symbol=symbol,
+                    side=trade["side"],
+                    quantity=trade["quantity"],
+                    sl_price=0.0,
+                    tp_price=0.0,
+                    hard_sl_price=hard_sl_px,
+                )
+                if res_hard.get("hard_sl_order"):
+                    trade["exchange_hard_sl_order_id"] = res_hard["hard_sl_order"].get("orderId")
             return
 
         res = await self.client.place_sl_tp_orders(
@@ -359,18 +412,21 @@ class TrackerEngine:
             tp_price=trade["tp"],
             sl_mode=trade.get("sl_mode", "STOP_LIMIT_BE"),
             be_price=trade.get("be_price", 0.0),
+            hard_sl_price=hard_sl_px,
         )
         if res.get("sl_order"):
             trade["exchange_sl_order_id"] = res["sl_order"].get("orderId")
         if res.get("tp_order"):
             trade["exchange_tp_order_id"] = res["tp_order"].get("orderId")
+        if res.get("hard_sl_order"):
+            trade["exchange_hard_sl_order_id"] = res["hard_sl_order"].get("orderId")
 
     async def _cleanup_exchange_orders(self, trade: Dict[str, Any]) -> None:
-        """Tự động dọn các lệnh chờ Entry / SL / TP còn sót trên Binance Futures."""
+        """Tự động dọn các lệnh chờ Entry / SL / TP / Hard SL còn sót trên Binance Futures."""
         if self.settings["trading_mode"] not in ("TESTNET", "MAINNET"):
             return
         symbol = trade["symbol"]
-        for oid_key in ("exchange_entry_order_id", "exchange_sl_order_id", "exchange_tp_order_id"):
+        for oid_key in ("exchange_entry_order_id", "exchange_sl_order_id", "exchange_tp_order_id", "exchange_hard_sl_order_id"):
             oid = trade.get(oid_key)
             if oid:
                 try:
@@ -759,6 +815,36 @@ class TrackerEngine:
                     sl_triggered = bool(trade.get("sl_triggered", False))
                     be_px = trade.get("be_price") or self.calc_be_price(sym, trade["side"], entry, trade.get("be_fee_pct"))
                     trade["be_price"] = be_px
+                    hard_sl = float(trade.get("hard_sl") or 0.0)
+
+                    # 0. KIỂM TRA CHẠM SL CỨNG 4% (HARD SL - Mode Mạo Hiểm):
+                    # Nếu giá rơi tiếp chạm Hard SL (ví dụ 64,058.7) -> Cắt lỗ đóng lệnh ngay lập tức!
+                    if hard_sl > 0:
+                        hit_hard_sl = (mark_px <= hard_sl) if is_long else (mark_px >= hard_sl)
+                        if hit_hard_sl:
+                            trade["status"] = "HIT_HARD_SL"
+                            trade["closed_at"] = int(time.time() * 1000)
+                            trade["close_reason"] = "HIT_HARD_SL"
+                            hard_pnl_dist = (hard_sl - entry) if is_long else (entry - hard_sl)
+                            hard_usd = round(hard_pnl_dist * trade["quantity"], 2)
+                            trade["realized_usd"] = round(trade.get("realized_usd", 0.0) + hard_usd, 2)
+                            trade["realized_r"] = round(hard_pnl_dist / r_dist, 2)
+                            trade["mae_r"] = round(max(trade.get("mae_r", 0.0), abs(trade["realized_r"])), 2)
+                            trade["floating_r"] = 0.0
+                            trade["floating_usd"] = 0.0
+                            changed = True
+
+                            if self.settings["trading_mode"] == "PAPER":
+                                self.settings["paper_balance"] = round(self.settings["paper_balance"] + hard_usd, 2)
+                                self._save_settings()
+                            else:
+                                await self._cleanup_exchange_orders(trade)
+
+                            self._log(
+                                "ERROR",
+                                f"💥 CHẠM SL CỨNG 4% ({hard_sl}) lệnh {trade['side']} {sym} -> Đã đóng lệnh bảo vệ tài khoản (${trade['realized_usd']})!",
+                            )
+                            continue
 
                     # TRƯỜNG HỢP A: Đã chạm SL trước đó và đang chờ hồi về giá Chốt Hòa (be_px)
                     if sl_triggered:
@@ -904,14 +990,14 @@ class TrackerEngine:
         pending_orders = [t for t in all_trades if t["status"] == "WAITING"]
         history_trades = [t for t in all_trades if t["status"] not in ("ACTIVE", "WAITING")]
 
-        closed_with_result = [t for t in history_trades if t["status"] in ("HIT_TP", "HIT_SL", "HIT_BE", "MANUAL_CLOSE")]
+        closed_with_result = [t for t in history_trades if t["status"] in ("HIT_TP", "HIT_SL", "HIT_BE", "HIT_HARD_SL", "MANUAL_CLOSE")]
         wins = [t for t in closed_with_result if t.get("realized_usd", 0.0) > 0]
         win_rate = round((len(wins) / len(closed_with_result)) * 100.0, 1) if closed_with_result else 0.0
         total_realized_usd = round(sum(t.get("realized_usd", 0.0) for t in closed_with_result), 2)
         total_realized_r = round(sum(t.get("realized_r", 0.0) for t in closed_with_result), 2)
 
         return {
-            "version": "2.0.6",
+            "version": "2.0.7",
             "mode": self.settings["trading_mode"],
             "account": self.account_cache,
             "positions": active_positions,
