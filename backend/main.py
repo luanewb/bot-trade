@@ -51,8 +51,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Binance Futures Long/Short Tracker Bot v2.0.7",
-    version="2.0.7",
+    title="Binance Futures Long/Short Tracker Bot v2.0.8",
+    version="2.0.8",
     lifespan=lifespan,
 )
 

@@ -1,6 +1,6 @@
 //@version=5
-// Version: 2.0.7
-indicator("Long/Short Bot-trade v2.0.7", overlay=true)
+// Version: 2.0.8
+indicator("Long/Short Bot-trade v2.0.8", overlay=true)
 
 // --- THIẾT LẬP MỨC GIÁ & NẾN VÀO LỆNH ---
 grp_setup      = "1. Mức giá & Vị trí nến vào lệnh"

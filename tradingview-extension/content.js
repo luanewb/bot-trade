@@ -1,4 +1,4 @@
-// Long/Short Tracker Bridge v2.0.7 - Nút Đặt Lệnh, Stop-Limit Chốt Hòa & Mode Mạo Hiểm (Alt+B) trên TradingView
+// Long/Short Tracker Bridge v2.0.8 - Nút Đặt Lệnh, Stop-Limit Chốt Hòa & Mode Mạo Hiểm (Alt+B) trên TradingView
 (function () {
   const oldPanel = document.getElementById("ls-tracker-floating-panel");
   if (oldPanel) oldPanel.remove();
@@ -135,7 +135,7 @@
     <div id="lst-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e222d;border-radius:8px 8px 0 0;cursor:move;">
       <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:12px;color:#fcd535;">
         <span id="lst-dot" style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;"></span>
-        <span>⚡ LONG/SHORT TRACKER v2.0.7</span>
+        <span>⚡ LONG/SHORT TRACKER v2.0.8</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
         <button id="lst-sync-now" title="Đọc lại giá từ biểu đồ ngay lập tức" style="background:#334155;border:none;color:#e2e8f0;border-radius:4px;cursor:pointer;font-size:10px;padding:2px 6px;font-weight:600;">🔄 Sync</button>

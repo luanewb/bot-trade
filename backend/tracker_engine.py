@@ -997,7 +997,7 @@ class TrackerEngine:
         total_realized_r = round(sum(t.get("realized_r", 0.0) for t in closed_with_result), 2)
 
         return {
-            "version": "2.0.7",
+            "version": "2.0.8",
             "mode": self.settings["trading_mode"],
             "account": self.account_cache,
             "positions": active_positions,
