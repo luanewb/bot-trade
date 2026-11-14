@@ -54,7 +54,7 @@
         <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" id="ws-dot"></span>
         <h1 class="font-bold text-sm md:text-base tracking-wide text-white flex items-center gap-2">
           <span>⚡ LONG/SHORT TRACKER BOT</span>
-          <span class="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 mono">v2.0.8</span>
+          <span class="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 mono">v2.0.9</span>
         </h1>
       </div>
       <span id="mode-badge" class="text-xs font-bold px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 mono">
@@ -83,6 +83,10 @@
       <div class="hidden xl:block">
         <span class="text-slate-400 block text-[10px] uppercase">Đã chốt (Winrate)</span>
         <span id="acct-realized" class="font-semibold text-sm text-emerald-400 mono">$0.00 (0.0%)</span>
+      </div>
+      <div>
+        <span class="text-slate-400 block text-[10px] uppercase">Lệnh hôm nay</span>
+        <span id="acct-daily-limit" class="font-bold text-sm text-emerald-400 mono">0/2</span>
       </div>
     </div>
 
@@ -262,6 +266,10 @@
             <span id="preview-reward-usd" class="font-bold text-teal-400 mono">+$200.00 (+2.0R)</span>
           </div>
         </div>
+      </div>
+
+      <div id="daily-limit-banner" class="hidden mb-2 px-3 py-2 rounded bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-semibold text-center">
+        🚫 Đã đạt giới hạn tối đa 2/2 lệnh hôm nay (không tính lệnh Cancel).
       </div>
 
       <button id="btn-submit-order" onclick="submitDashboardOrder()"
@@ -520,6 +528,21 @@
           <label for="cfg-use-acct-bal" class="text-slate-300">
             Ưu tiên tính Volume theo <b>% Risk × Số dư thực tế của Ví Binance</b> (thay vì Volume cố định từ Indicator)
           </label>
+        </div>
+
+        <div class="bg-slate-900 p-2.5 rounded border border-slate-800 space-y-2">
+          <div class="flex items-center justify-between gap-3">
+            <label for="cfg-enable-daily-limit" class="flex items-center gap-2 text-slate-200 font-semibold cursor-pointer">
+              <input id="cfg-enable-daily-limit" type="checkbox" class="w-4 h-4 accent-amber-500" />
+              <span>🛡️ Giới hạn số lệnh tối đa mỗi ngày</span>
+            </label>
+            <div class="flex items-center gap-1.5">
+              <span class="text-slate-400">Tối đa:</span>
+              <input id="cfg-max-trades-per-day" type="number" min="1" max="50" class="w-16 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-amber-300 mono font-bold text-center" />
+              <span class="text-slate-400">lệnh</span>
+            </div>
+          </div>
+          <p class="text-[11px] text-slate-400 pl-6">Chỉ tính các lệnh đã vào <b>ACTIVE</b> (sau đó SL / TP / Hòa / Close), không tính lệnh <b>Cancel</b>. Bộ đếm vẫn được giữ nguyên kể cả khi xóa lịch sử.</p>
         </div>
 
         <div class="border-t border-slate-800 pt-3">
@@ -1011,6 +1034,8 @@
       document.getElementById('cfg-paper-bal').value = cfg.paper_balance || 10000;
       document.getElementById('cfg-leverage').value = cfg.default_leverage || 20;
       document.getElementById('cfg-use-acct-bal').checked = !!cfg.use_account_balance_for_risk;
+      document.getElementById('cfg-enable-daily-limit').checked = cfg.enable_daily_trade_limit !== false;
+      document.getElementById('cfg-max-trades-per-day').value = cfg.max_trades_per_day || 2;
       document.getElementById('cfg-testnet-key').value = cfg.binance_testnet_api_key || '';
       document.getElementById('cfg-testnet-secret').value = '';
       document.getElementById('cfg-mainnet-key').value = cfg.binance_api_key || '';
@@ -1024,6 +1049,8 @@
         paper_balance: parseFloat(document.getElementById('cfg-paper-bal').value) || 10000,
         default_leverage: parseInt(document.getElementById('cfg-leverage').value) || 20,
         use_account_balance_for_risk: document.getElementById('cfg-use-acct-bal').checked,
+        enable_daily_trade_limit: document.getElementById('cfg-enable-daily-limit').checked,
+        max_trades_per_day: Math.max(1, parseInt(document.getElementById('cfg-max-trades-per-day').value) || 2),
         binance_testnet_api_key: document.getElementById('cfg-testnet-key').value.trim(),
         binance_api_key: document.getElementById('cfg-mainnet-key').value.trim(),
       };
@@ -1073,6 +1100,34 @@
       const st = state.stats || {};
       const rSign = (st.total_realized_usd || 0) >= 0 ? '+' : '';
       document.getElementById('acct-realized').innerText = `${rSign}$${(st.total_realized_usd || 0).toFixed(2)} (${st.win_rate || 0}% Win)`;
+
+      const dl = state.daily_limit || {};
+      const dlCount = dl.count ?? st.daily_trade_count ?? 0;
+      const dlMax = dl.limit ?? st.daily_trade_limit ?? 2;
+      const dlEnabled = dl.enabled !== undefined ? dl.enabled : (st.daily_limit_enabled !== false);
+      const dlReached = !!dl.limit_reached;
+      const dlEl = document.getElementById('acct-daily-limit');
+      const dlBanner = document.getElementById('daily-limit-banner');
+      if (dlEl) {
+        if (!dlEnabled) {
+          dlEl.innerText = `${dlCount} (Tắt)`;
+          dlEl.className = 'font-bold text-sm text-slate-400 mono';
+        } else if (dlReached) {
+          dlEl.innerText = `${dlCount}/${dlMax} (ĐẦY)`;
+          dlEl.className = 'font-bold text-sm text-rose-400 mono';
+        } else {
+          dlEl.innerText = `${dlCount}/${dlMax}`;
+          dlEl.className = 'font-bold text-sm text-emerald-400 mono';
+        }
+      }
+      if (dlBanner) {
+        if (dlEnabled && dlReached) {
+          dlBanner.innerText = `🚫 Đã đạt giới hạn tối đa ${dlCount}/${dlMax} lệnh hôm nay (không tính lệnh Cancel).`;
+          dlBanner.classList.remove('hidden');
+        } else {
+          dlBanner.classList.add('hidden');
+        }
+      }
 
       document.getElementById('badge-active-count').innerText = st.active_count || 0;
       document.getElementById('badge-pending-count').innerText = st.pending_count || 0;

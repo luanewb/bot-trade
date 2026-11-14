@@ -12,11 +12,14 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRADES_FILE = DATA_DIR / "trades_state.json"
 SETTINGS_FILE = DATA_DIR / "bot_settings.json"
+DAILY_COUNTS_FILE = DATA_DIR / "daily_trade_counts.json"
+
+COUNTED_TRADE_STATUSES = ("ACTIVE", "HIT_TP", "HIT_SL", "HIT_HARD_SL", "HIT_BE", "MANUAL_CLOSE")
 
 
 class TrackerEngine:
     """
-    Bộ máy quản lý lệnh chuẩn Long/Short Tracker v2.0.3 kết hợp chuẩn thao tác MT5
+    Bộ máy quản lý lệnh chuẩn Long/Short Tracker v2.0.9 kết hợp chuẩn thao tác MT5
     trên Binance Futures (hỗ trợ PAPER, TESTNET, MAINNET).
     """
 
@@ -36,6 +39,8 @@ class TrackerEngine:
             "auto_sl_tp_on_exchange": True,
             "default_sl_mode": "STOP_LIMIT_BE",  # STOP_LIMIT_BE (Chạm SL -> Hủy TP & Đặt Limit Chốt Hòa) hoặc STOP_MARKET
             "be_fee_offset_pct": 0.04,  # 0.04% bù phí giao dịch 2 chiều khi đặt lệnh Chốt Hòa
+            "enable_daily_trade_limit": True,  # Rule giới hạn tối đa N lệnh/ngày (không tính lệnh Cancel)
+            "max_trades_per_day": 2,
         }
         self._load_settings()
 
@@ -48,6 +53,7 @@ class TrackerEngine:
         )
 
         self.trades: Dict[str, Dict[str, Any]] = {}
+        self.daily_counted_ids: Dict[str, List[str]] = {}
         self.live_prices: Dict[str, float] = {}
         self.account_cache: Dict[str, Any] = {
             "balance": self.settings["paper_balance"],
@@ -61,7 +67,8 @@ class TrackerEngine:
         self.event_logs: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._load_trades()
-        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.7 (Chế độ: {self.settings['trading_mode']})")
+        self._load_daily_counts()
+        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.9 (Chế độ: {self.settings['trading_mode']})")
 
     def calc_be_price(self, symbol: str, side: str, entry_px: float, fee_pct: Optional[float] = None) -> float:
         """Tính mức giá Chốt Hòa (Breakeven) cộng phí 2 chiều (mặc định 0.04%)."""
@@ -122,10 +129,100 @@ class TrackerEngine:
         except Exception:
             pass
 
+    def _today_key(self) -> str:
+        return time.strftime("%Y-%m-%d", time.localtime())
+
+    def _trade_day_key(self, trade: Dict[str, Any]) -> str:
+        ts_ms = trade.get("triggered_at") or trade.get("closed_at") or trade.get("created_at")
+        if ts_ms:
+            try:
+                return time.strftime("%Y-%m-%d", time.localtime(float(ts_ms) / 1000.0))
+            except Exception:
+                pass
+        return self._today_key()
+
+    def _save_daily_counts(self) -> None:
+        try:
+            DAILY_COUNTS_FILE.write_text(
+                json.dumps(self.daily_counted_ids, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _load_daily_counts(self) -> None:
+        if DAILY_COUNTS_FILE.exists():
+            try:
+                data = json.loads(DAILY_COUNTS_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self.daily_counted_ids = {
+                        str(day): [str(tid) for tid in ids if tid]
+                        for day, ids in data.items()
+                        if isinstance(ids, list)
+                    }
+            except Exception:
+                self.daily_counted_ids = {}
+
+        # Đồng bộ ngược từ trades_state.json để không sót các lệnh đã active/đóng trước khi bật rule
+        updated = False
+        for trade in self.trades.values():
+            if trade.get("status") in COUNTED_TRADE_STATUSES and trade.get("id"):
+                day_key = self._trade_day_key(trade)
+                ids = self.daily_counted_ids.setdefault(day_key, [])
+                if trade["id"] not in ids:
+                    ids.append(trade["id"])
+                    updated = True
+        if updated:
+            self._save_daily_counts()
+
+    def _record_daily_trade(self, trade: Dict[str, Any]) -> None:
+        """Ghi nhận lệnh đã ACTIVE/SL/TP/Hòa/Close vào bộ đếm ngày (giữ nguyên ngay cả khi xóa lịch sử)."""
+        tid = trade.get("id")
+        if not tid or trade.get("status") not in COUNTED_TRADE_STATUSES:
+            return
+        day_key = self._trade_day_key(trade)
+        ids = self.daily_counted_ids.setdefault(day_key, [])
+        if tid not in ids:
+            ids.append(tid)
+            self._save_daily_counts()
+
+    def get_daily_trade_status(self) -> Dict[str, Any]:
+        today = self._today_key()
+        enabled = bool(self.settings.get("enable_daily_trade_limit", True))
+        try:
+            limit = max(1, int(self.settings.get("max_trades_per_day", 2)))
+        except Exception:
+            limit = 2
+        ids = self.daily_counted_ids.get(today, [])
+        count = len(ids)
+        return {
+            "enabled": enabled,
+            "date": today,
+            "count": count,
+            "limit": limit,
+            "remaining": max(0, limit - count),
+            "limit_reached": enabled and count >= limit,
+            "trade_ids": list(ids),
+        }
+
+    def _ensure_daily_limit_available(self, action_label: str = "đặt lệnh mới") -> None:
+        status = self.get_daily_trade_status()
+        if status["limit_reached"]:
+            raise ValueError(
+                f"🚫 Đã đạt giới hạn tối đa {status['limit']} lệnh/ngày "
+                f"({status['count']}/{status['limit']} ngày {status['date']}) — không thể {action_label}. "
+                "Chỉ tính lệnh đã ACTIVE/SL/TP/Hòa/Close, không tính lệnh Cancel."
+            )
+
     def update_settings(self, new_cfg: Dict[str, Any]) -> Dict[str, Any]:
         for k, v in new_cfg.items():
             if k in self.settings and v is not None:
                 self.settings[k] = v
+        self.settings["enable_daily_trade_limit"] = bool(self.settings.get("enable_daily_trade_limit", True))
+        try:
+            self.settings["max_trades_per_day"] = max(1, int(self.settings.get("max_trades_per_day", 2)))
+        except Exception:
+            self.settings["max_trades_per_day"] = 2
         self.settings["trading_mode"] = str(self.settings["trading_mode"]).upper()
         self.client.mode = self.settings["trading_mode"]
         self.client.api_key = str(self.settings.get("binance_api_key", "")).strip()
@@ -158,6 +255,7 @@ class TrackerEngine:
         - Đặt lệnh LIMIT (hoặc MARKET) kèm SL & TP
         """
         async with self._lock:
+            self._ensure_daily_limit_available("đặt lệnh mới")
             await self.client.ensure_exchange_info()
 
             raw_symbol = str(payload.get("symbol", "BTCUSDT"))
@@ -349,6 +447,8 @@ class TrackerEngine:
 
             self.trades[trade_id] = trade_record
             self._save_trades()
+            if trade_record["status"] == "ACTIVE":
+                self._record_daily_trade(trade_record)
 
             mode_tag = "🔥 MODE MẠO HIỂM (TK/3x25 | SL cứng 4%: " + str(hard_sl_px) + ")" if high_risk_mode else f"SL: {sl_px} ({sl_mode} -> BE: {be_price})"
             self._log(
@@ -460,6 +560,7 @@ class TrackerEngine:
                 raise ValueError(f"Không tìm thấy lệnh {trade_id}")
             if trade["status"] != "WAITING":
                 raise ValueError("Chỉ có thể khớp nhanh cho lệnh đang ở trạng thái WAITING")
+            self._ensure_daily_limit_available("khớp Market lệnh chờ")
 
             symbol = trade["symbol"]
             mark_px = self.live_prices.get(symbol) or await self.client.get_symbol_price(symbol) or trade["entry"]
@@ -489,6 +590,7 @@ class TrackerEngine:
                 await self._attach_exchange_sl_tp(trade)
 
             self._save_trades()
+            self._record_daily_trade(trade)
             self._log("SUCCESS", f"Đã khớp lệnh Market ngay cho {trade['side']} {symbol} @ {mark_px}")
             return trade
 
@@ -534,6 +636,7 @@ class TrackerEngine:
                     self._save_settings()
 
                 self._save_trades()
+                self._record_daily_trade(trade)
                 self._log(
                     "INFO",
                     f"Đã đóng toàn bộ vị thế {trade['side']} {symbol} @ {mark_px} | PnL: ${trade['realized_usd']} ({trade['realized_r']}R)",
@@ -660,6 +763,7 @@ class TrackerEngine:
         old_trade = self.trades.get(trade_id)
         if not old_trade or old_trade["status"] != "ACTIVE":
             raise ValueError("Chỉ hỗ trợ đảo chiều vị thế đang ACTIVE")
+        self._ensure_daily_limit_available("đảo chiều vị thế")
 
         symbol = old_trade["symbol"]
         old_side = old_trade["side"]
@@ -787,12 +891,26 @@ class TrackerEngine:
                             crossed_entry = True
 
                     if crossed_entry:
+                        daily_status = self.get_daily_trade_status()
+                        if daily_status["limit_reached"]:
+                            await self._cleanup_exchange_orders(trade)
+                            trade["status"] = "CANCELED"
+                            trade["closed_at"] = int(time.time() * 1000)
+                            trade["close_reason"] = "DAILY_LIMIT_CANCELED"
+                            changed = True
+                            self._log(
+                                "WARN",
+                                f"🚫 Tự động hủy lệnh chờ {trade['side']} {sym} @ {entry} ({tid}) vì đã đạt giới hạn {daily_status['count']}/{daily_status['limit']} lệnh/ngày!",
+                            )
+                            continue
+
                         trade["status"] = "ACTIVE"
                         trade["triggered_at"] = int(time.time() * 1000)
                         trade["mfe_r"] = 0.0
                         trade["mae_r"] = 0.0
                         status = "ACTIVE"
                         changed = True
+                        self._record_daily_trade(trade)
                         self._log("SUCCESS", f"⚡ Lệnh chờ {trade['side']} {sym} đã KHỚP tại Entry {entry} -> ACTIVE!")
                         if self.settings["trading_mode"] in ("TESTNET", "MAINNET"):
                             await self._attach_exchange_sl_tp(trade)
@@ -996,13 +1114,16 @@ class TrackerEngine:
         total_realized_usd = round(sum(t.get("realized_usd", 0.0) for t in closed_with_result), 2)
         total_realized_r = round(sum(t.get("realized_r", 0.0) for t in closed_with_result), 2)
 
+        daily_limit = self.get_daily_trade_status()
+
         return {
-            "version": "2.0.8",
+            "version": "2.0.9",
             "mode": self.settings["trading_mode"],
             "account": self.account_cache,
             "positions": active_positions,
             "pending": pending_orders,
             "history": history_trades,
+            "daily_limit": daily_limit,
             "stats": {
                 "active_count": len(active_positions),
                 "pending_count": len(pending_orders),
@@ -1010,6 +1131,10 @@ class TrackerEngine:
                 "win_rate": win_rate,
                 "total_realized_usd": total_realized_usd,
                 "total_realized_r": total_realized_r,
+                "daily_trade_count": daily_limit["count"],
+                "daily_trade_limit": daily_limit["limit"],
+                "daily_limit_enabled": daily_limit["enabled"],
+                "daily_limit_reached": daily_limit["limit_reached"],
             },
             "logs": self.event_logs[:40],
         }

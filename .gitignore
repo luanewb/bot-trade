@@ -3,4 +3,5 @@ __pycache__/
 .env
 data/bot_settings.json
 data/trades_state.json
+data/daily_trade_counts.json
 
