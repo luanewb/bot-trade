@@ -19,7 +19,7 @@ COUNTED_TRADE_STATUSES = ("ACTIVE", "HIT_TP", "HIT_SL", "HIT_HARD_SL", "HIT_BE",
 
 class TrackerEngine:
     """
-    Bộ máy quản lý lệnh chuẩn Long/Short Tracker v2.0.9 kết hợp chuẩn thao tác MT5
+    Bộ máy quản lý lệnh chuẩn Long/Short Tracker v2.0.10 kết hợp chuẩn thao tác MT5
     trên Binance Futures (hỗ trợ PAPER, TESTNET, MAINNET).
     """
 
@@ -68,7 +68,7 @@ class TrackerEngine:
         self._lock = asyncio.Lock()
         self._load_trades()
         self._load_daily_counts()
-        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.9 (Chế độ: {self.settings['trading_mode']})")
+        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.10 (Chế độ: {self.settings['trading_mode']})")
 
     def calc_be_price(self, symbol: str, side: str, entry_px: float, fee_pct: Optional[float] = None) -> float:
         """Tính mức giá Chốt Hòa (Breakeven) cộng phí 2 chiều (mặc định 0.04%)."""
@@ -1117,7 +1117,7 @@ class TrackerEngine:
         daily_limit = self.get_daily_trade_status()
 
         return {
-            "version": "2.0.9",
+            "version": "2.0.10",
             "mode": self.settings["trading_mode"],
             "account": self.account_cache,
             "positions": active_positions,

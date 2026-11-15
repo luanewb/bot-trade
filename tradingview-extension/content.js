@@ -1,4 +1,4 @@
-// Long/Short Tracker Bridge v2.0.9 - Nút Đặt Lệnh, Stop-Limit Chốt Hòa & Mode Mạo Hiểm (Alt+B) trên TradingView
+// Long/Short Tracker Bridge v2.0.10 - Nút Đặt Lệnh, Stop-Limit Chốt Hòa & Mode Mạo Hiểm (Alt+B) trên TradingView
 (function () {
   const oldPanel = document.getElementById("ls-tracker-floating-panel");
   if (oldPanel) oldPanel.remove();
@@ -116,8 +116,8 @@
   widget.id = "ls-tracker-floating-panel";
   widget.style.cssText = `
     position: fixed;
-    bottom: 24px;
-    right: 24px;
+    bottom: 42px;
+    left: 60px;
     width: 325px;
     background: #131722;
     border: 1px solid #2a2e39;
@@ -135,7 +135,7 @@
     <div id="lst-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e222d;border-radius:8px 8px 0 0;cursor:move;">
       <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:12px;color:#fcd535;">
         <span id="lst-dot" style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;"></span>
-        <span>⚡ LONG/SHORT TRACKER v2.0.9</span>
+        <span>⚡ LONG/SHORT TRACKER v2.0.10</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
         <button id="lst-sync-now" title="Đọc lại giá từ biểu đồ ngay lập tức" style="background:#334155;border:none;color:#e2e8f0;border-radius:4px;cursor:pointer;font-size:10px;padding:2px 6px;font-weight:600;">🔄 Sync</button>
@@ -235,22 +235,24 @@
   document.body.appendChild(widget);
 
   const header = document.getElementById("lst-header");
-  let isDragging = false, startX = 0, startY = 0, origRight = 24, origBottom = 24;
+  let isDragging = false, startX = 0, startY = 0, origLeft = 60, origBottom = 42;
   header.addEventListener("mousedown", (e) => {
     if (e.target.tagName === "BUTTON" || e.target.tagName === "A") return;
     isDragging = true;
     startX = e.clientX;
     startY = e.clientY;
     const rect = widget.getBoundingClientRect();
-    origRight = window.innerWidth - rect.right;
+    origLeft = rect.left;
     origBottom = window.innerHeight - rect.bottom;
   });
   window.addEventListener("mousemove", (e) => {
     if (!isDragging) return;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
-    widget.style.right = Math.max(8, origRight - dx) + "px";
-    widget.style.bottom = Math.max(8, origBottom - dy) + "px";
+    const maxLeft = Math.max(8, window.innerWidth - widget.offsetWidth - 8);
+    const maxBottom = Math.max(8, window.innerHeight - widget.offsetHeight - 8);
+    widget.style.left = Math.min(maxLeft, Math.max(8, origLeft + dx)) + "px";
+    widget.style.bottom = Math.min(maxBottom, Math.max(8, origBottom - dy)) + "px";
   });
   window.addEventListener("mouseup", () => { isDragging = false; });
 
