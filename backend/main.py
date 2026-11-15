@@ -51,8 +51,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Binance Futures Long/Short Tracker Bot v2.0.10",
-    version="2.0.10",
+    title="Binance Futures Long/Short Tracker Bot v2.0.11",
+    version="2.0.11",
     lifespan=lifespan,
 )
 
@@ -119,7 +119,7 @@ class ModifyTradeRequest(BaseModel):
 async def health_check():
     return {
         "status": "ok",
-        "version": "2.0.10",
+        "version": "2.0.11",
         "mode": engine.settings["trading_mode"],
         "daily_limit": engine.get_daily_trade_status(),
     }
